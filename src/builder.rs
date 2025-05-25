@@ -18,6 +18,7 @@ pub struct Builder<W: Write> {
     options: BuilderOptions,
     finished: bool,
     obj: Option<W>,
+
 }
 
 #[derive(Clone, Copy)]
@@ -28,6 +29,14 @@ struct BuilderOptions {
 }
 
 impl<W: Write> Builder<W> {
+    /// Returns whether the archive has been finished.
+    ///
+    /// An archive is considered finished when `finish()` has been called,
+    /// which writes the necessary trailing blocks to complete the tar format.
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
     /// Create a new archive builder with the underlying object as the
     /// destination of all data written. The builder will use
     /// `HeaderMode::Complete` by default.
@@ -214,15 +223,15 @@ impl<W: Write> Builder<W> {
     /// entry.write_all(b"world!\n").unwrap();
     /// entry.finish().unwrap();
     /// ```
-    pub fn append_writer<'a, P: AsRef<Path>>(
-        &'a mut self,
-        header: &'a mut Header,
+    pub fn into_writer<'a, P: AsRef<Path>>(
+        self,
+        header: Header,
         path: P,
-    ) -> io::Result<EntryWriter<'a>>
+    ) -> io::Result<EntryWriter<W>>
     where
-        W: Seek,
+        W: Write,
     {
-        EntryWriter::start(self.get_mut(), header, path.as_ref())
+        EntryWriter::start(self, header, path.as_ref())
     }
 
     /// Adds a new link (symbolic or hard) entry to this archive with the specified path and target.
@@ -485,16 +494,6 @@ impl<W: Write> Builder<W> {
     }
 }
 
-trait SeekWrite: Write + Seek {
-    fn as_write(&mut self) -> &mut dyn Write;
-}
-
-impl<T: Write + Seek> SeekWrite for T {
-    fn as_write(&mut self) -> &mut dyn Write {
-        self
-    }
-}
-
 /// A writer for a single entry in a tar archive.
 ///
 /// This struct is returned by [`Builder::append_writer`] and provides a
@@ -502,34 +501,32 @@ impl<T: Write + Seek> SeekWrite for T {
 ///
 /// After writing all data to the entry, it must be finalized either by
 /// explicitly calling [`EntryWriter::finish`] or by letting it drop.
-pub struct EntryWriter<'a> {
+pub struct EntryWriter<T: Write> {
     // NOTE: Do not add any fields here which require Drop!
     // See the comment below in finish().
-    obj: &'a mut dyn SeekWrite,
-    header: &'a mut Header,
+    builder: Option<Builder<T>>,
     written: u64,
 }
 
-impl EntryWriter<'_> {
-    fn start<'a>(
-        obj: &'a mut dyn SeekWrite,
-        header: &'a mut Header,
+impl<T: Write> EntryWriter<T> {
+    fn start(
+        mut builder: Builder<T>,
+        mut header: Header,
         path: &Path,
-    ) -> io::Result<EntryWriter<'a>> {
-        prepare_header_path(obj.as_write(), header, path)?;
+    ) -> io::Result<EntryWriter<T>> {
+        prepare_header_path(builder.get_mut(), &mut header, path)?;
+        header.set_cksum();
 
-        // Reserve space for header, will be overwritten once data is written.
-        obj.write_all([0u8; BLOCK_SIZE as usize].as_ref())?;
+        builder.get_mut().write_all(header.as_bytes())?;
 
         Ok(EntryWriter {
-            obj,
-            header,
+            builder: Some(builder),
             written: 0,
         })
     }
 
     /// Finish writing the current entry in the archive.
-    pub fn finish(self) -> io::Result<()> {
+    pub fn finish(self) -> io::Result<Builder<T>> {
         // NOTE: This is an optimization for "fallible destructuring".
         // We want finish() to return an error, but we also need to invoke
         // cleanup in our Drop handler, which will run unconditionally
@@ -543,41 +540,40 @@ impl EntryWriter<'_> {
         this.do_finish()
     }
 
-    fn do_finish(&mut self) -> io::Result<()> {
+    /// Returns a mutable reference to the underlying writer.
+    pub fn get_mut(&mut self) -> &mut T {
+        self.builder.as_mut().unwrap().get_mut()
+    }
+
+    /// Gets shared reference to the underlying object.
+    pub fn get_ref(&self) -> &T {
+        &self.builder.as_ref().unwrap().get_ref()
+    }
+
+    fn do_finish(&mut self) -> io::Result<Builder<T>> {
         // Pad with zeros if necessary.
         let buf = [0u8; BLOCK_SIZE as usize];
         let remaining = BLOCK_SIZE.wrapping_sub(self.written) % BLOCK_SIZE;
-        self.obj.write_all(&buf[..remaining as usize])?;
-        let written = (self.written + remaining) as i64;
+        let mut builder = self.builder.take().unwrap();
+        builder.get_mut().write_all(&buf[..remaining as usize])?;
 
-        // Seek back to the header position.
-        self.obj
-            .seek(io::SeekFrom::Current(-written - BLOCK_SIZE as i64))?;
-
-        self.header.set_size(self.written);
-        self.header.set_cksum();
-        self.obj.write_all(self.header.as_bytes())?;
-
-        // Seek forward to restore the position.
-        self.obj.seek(io::SeekFrom::Current(written))?;
-
-        Ok(())
-    }
+        Ok(builder)
+    } 
 }
 
-impl Write for EntryWriter<'_> {
+impl<T: Write> Write for EntryWriter<T> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let len = self.obj.write(buf)?;
+        let len = self.get_mut().write(buf)?;
         self.written += len as u64;
         Ok(len)
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.obj.flush()
+        self.get_mut().flush()
     }
 }
 
-impl Drop for EntryWriter<'_> {
+impl<T: Write> Drop for EntryWriter<T> {
     fn drop(&mut self) {
         let _ = self.do_finish();
     }

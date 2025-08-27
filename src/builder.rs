@@ -190,7 +190,7 @@ impl<W: Write> Builder<W> {
     ) -> io::Result<()> {
         prepare_header_path(self.get_mut(), header, path.as_ref())?;
         header.set_cksum();
-        self.append(&header, data)
+        self.append(header, data)
     }
 
     /// Adds a new entry to this archive and returns an [`EntryWriter`] for
@@ -279,7 +279,7 @@ impl<W: Write> Builder<W> {
         prepare_header_path(self.get_mut(), header, path)?;
         prepare_header_link(self.get_mut(), header, target)?;
         header.set_cksum();
-        self.append(&header, std::io::empty())
+        self.append(header, std::io::empty())
     }
 
     /// Adds a file on the local filesystem to this archive.
@@ -390,7 +390,7 @@ impl<W: Write> Builder<W> {
     /// operation then this may corrupt the archive.
     ///
     /// Note this will not add the contents of the directory to the archive.
-    /// See `append_dir_all` for recusively adding the contents of the directory.
+    /// See `append_dir_all` for recursively adding the contents of the directory.
     ///
     /// Also note that after all files have been written to an archive the
     /// `finish` function needs to be called to finish writing the archive.
@@ -745,7 +745,7 @@ fn prepare_header_path(dst: &mut dyn Write, header: &mut Header, path: &Path) ->
     // long name extension by emitting an entry which indicates that it's the
     // filename.
     if let Err(e) = header.set_path(path) {
-        let data = path2bytes(&path)?;
+        let data = path2bytes(path)?;
         let max = header.as_old().name.len();
         // Since `e` isn't specific enough to let us know the path is indeed too
         // long, verify it first before using the extension.
@@ -766,7 +766,7 @@ fn prepare_header_path(dst: &mut dyn Write, header: &mut Header, path: &Path) ->
             Ok(s) => s,
             Err(e) => str::from_utf8(&data[..e.valid_up_to()]).unwrap(),
         };
-        header.set_truncated_path_for_gnu_header(&truncated)?;
+        header.set_truncated_path_for_gnu_header(truncated)?;
     }
     Ok(())
 }
@@ -777,8 +777,8 @@ fn prepare_header_link(
     link_name: &Path,
 ) -> io::Result<()> {
     // Same as previous function but for linkname
-    if let Err(e) = header.set_link_name(&link_name) {
-        let data = path2bytes(&link_name)?;
+    if let Err(e) = header.set_link_name(link_name) {
+        let data = path2bytes(link_name)?;
         if data.len() < header.as_old().linkname.len() {
             return Err(e);
         }
@@ -872,7 +872,7 @@ fn append_dir_all(
 ) -> io::Result<()> {
     let mut stack = vec![(src_path.to_path_buf(), true, false)];
     while let Some((src, is_dir, is_symlink)) = stack.pop() {
-        let dest = path.join(src.strip_prefix(&src_path).unwrap());
+        let dest = path.join(src.strip_prefix(src_path).unwrap());
         // In case of a symlink pointing to a directory, is_dir is false, but src.is_dir() will return true
         if is_dir || (is_symlink && options.follow && src.is_dir()) {
             for entry in fs::read_dir(&src)? {
@@ -979,7 +979,7 @@ fn find_sparse_entries_seek(
         });
     }
 
-    // On most Unices, we need to read `_PC_MIN_HOLE_SIZE` to see if the file
+    // On most Unixes, we need to read `_PC_MIN_HOLE_SIZE` to see if the file
     // system supports `SEEK_HOLE`.
     // FreeBSD: https://man.freebsd.org/cgi/man.cgi?query=lseek&sektion=2&manpath=FreeBSD+14.1-STABLE
     #[cfg(not(any(target_os = "linux", target_os = "android")))]
@@ -1204,7 +1204,7 @@ mod tests {
                 "|    |####|####|    |",
                 &[
                     SparseEntry {
-                        offset: 1 * SPARSE_BLOCK_SIZE,
+                        offset: SPARSE_BLOCK_SIZE,
                         num_bytes: 2 * SPARSE_BLOCK_SIZE,
                     },
                     SparseEntry {
